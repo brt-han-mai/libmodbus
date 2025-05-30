@@ -91,6 +91,7 @@ You can tweak the serial mode with the following functions:
 - [modbus_rtu_set_custom_rts](modbus_rtu_set_custom_rts.md)
 - [modbus_rtu_get_rts_delay](modbus_rtu_get_rts_delay.md)
 - [modbus_rtu_set_rts_delay](modbus_rtu_set_rts_delay.md)
+- [modbus_rtu_set_hw_echo_params](modbus_rtu_set_hw_echo_params.md)
 
 ### TCP (IPv4) Context
 

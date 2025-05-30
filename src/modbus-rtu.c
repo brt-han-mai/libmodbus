@@ -26,6 +26,8 @@
 #include <linux/serial.h>
 #endif
 
+static ssize_t _rtu_write_wrapper(modbus_t *ctx, const void *buf, size_t count);
+
 /* Table of CRC values for high-order byte */
 static const uint8_t table_crc_hi[] = {
     0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1,
@@ -272,7 +274,7 @@ static ssize_t _modbus_rtu_send(modbus_t *ctx, const uint8_t *req, int req_lengt
         ctx_rtu->set_rts(ctx, ctx_rtu->rts == MODBUS_RTU_RTS_UP);
         usleep(ctx_rtu->rts_delay);
 
-        size = write(ctx->s, req, req_length);
+        size = _rtu_write_wrapper(ctx, req, req_length);
 
         usleep(ctx_rtu->onebyte_time * req_length + ctx_rtu->rts_delay);
         ctx_rtu->set_rts(ctx, ctx_rtu->rts != MODBUS_RTU_RTS_UP);
@@ -280,7 +282,7 @@ static ssize_t _modbus_rtu_send(modbus_t *ctx, const uint8_t *req, int req_lengt
         return size;
     } else {
 #endif
-        return write(ctx->s, req, req_length);
+        return _rtu_write_wrapper(ctx, req, req_length);
 #if HAVE_DECL_TIOCM_RTS
     }
 #endif
@@ -1089,6 +1091,22 @@ int modbus_rtu_set_rts_delay(modbus_t *ctx, int us)
     }
 }
 
+int modbus_rtu_set_hw_echo_params(modbus_t *ctx, int is_echo, int us)
+{
+    modbus_rtu_t *ctx_rtu;
+
+    if (ctx == NULL || ctx->backend_data == NULL ||
+        ctx->backend->backend_type != _MODBUS_BACKEND_TYPE_RTU || us < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx_rtu = ctx->backend_data;
+    ctx_rtu->hw_echo = is_echo ? 1 : 0; /* Sanitize input. */
+    ctx_rtu->hw_echo_read_timeout = us;
+    return 0;
+}
+
 static void _modbus_rtu_close(modbus_t *ctx)
 {
     /* Restore line settings and close file descriptor in RTU mode */
@@ -1283,6 +1301,78 @@ modbus_new_rtu(const char *device, int baud, char parity, int data_bit, int stop
 #endif
 
     ctx_rtu->confirmation_to_ignore = FALSE;
+    ctx_rtu->hw_echo = FALSE;
+    ctx_rtu->hw_echo_read_timeout = 0;
 
     return ctx;
+}
+
+static ssize_t _rtu_write_wrapper(modbus_t *ctx, const void *buf, size_t count)
+{
+    modbus_rtu_t *ctx_rtu;
+    ssize_t wrc;
+    ssize_t rrc;
+    ssize_t length_to_read;
+    fd_set rset;
+    struct timeval timeout_tv;
+    uint8_t tmp_buf[MODBUS_MAX_ADU_LENGTH];
+
+    if (ctx == NULL || ctx->backend_data == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx_rtu = ctx->backend_data;
+    wrc = write(ctx->s, buf, count);
+
+    if (wrc > 0 && ctx_rtu->hw_echo) {
+        length_to_read = wrc;
+        timeout_tv.tv_sec = ctx_rtu->hw_echo_read_timeout / 1000000;
+        timeout_tv.tv_usec = ctx_rtu->hw_echo_read_timeout % 1000000;
+
+        while (length_to_read != 0) {
+            FD_ZERO(&rset);
+            FD_SET(ctx->s, &rset);
+
+            if (_modbus_rtu_select(ctx, &rset, &timeout_tv, length_to_read) == -1) {
+                wrc = -1;
+                break;
+            }
+
+            rrc = _modbus_rtu_recv(ctx, tmp_buf + wrc - length_to_read, length_to_read);
+
+            if (rrc == 0) {
+                errno = ECONNRESET;
+                wrc = -1;
+                break;
+            }
+
+            if (rrc == -1) {
+                if (errno == EINTR || errno == EAGAIN) {
+                    continue;
+                } else {
+                    if (ctx->debug) {
+                        fprintf(stderr, "Reading echoes failed. %s.\n", strerror(errno));
+                    }
+
+                    wrc = -1;
+                    break;
+                }
+            }
+
+            length_to_read -= rrc;
+        }
+
+        if (ctx->debug && wrc > 0) {
+            fprintf(stderr, "Discarded %d echoed byte(s).\n", wrc);
+
+            for (int i = 0; i < wrc; ++i) {
+                fprintf(stderr, "(%02X)", tmp_buf[i]);
+            }
+
+            fprintf(stderr, "\n");
+        }
+    }
+
+    return wrc;
 }

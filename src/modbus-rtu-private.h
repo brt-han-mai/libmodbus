@@ -72,6 +72,8 @@ typedef struct _modbus_rtu {
 #endif
     /* To handle many slaves on the same link */
     int confirmation_to_ignore;
+    int hw_echo;
+    int hw_echo_read_timeout;
 } modbus_rtu_t;
 
 #endif /* MODBUS_RTU_PRIVATE_H */
